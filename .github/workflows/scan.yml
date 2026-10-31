@@ -1,0 +1,42 @@
+# Scans ONE timeframe per run and saves the states to Supabase.
+# Triggered on time by cron-job.org through workflow_dispatch (GitHub's own
+# `schedule:` was unreliable), once per timeframe. See README.md.
+name: Scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      timeframe:
+        description: "Timeframe to scan"
+        type: choice
+        options: ["5m", "15m", "30m", "1h", "4h", "1d"]
+        default: "1d"
+
+# Least privilege: the job only needs to read this repo.
+permissions:
+  contents: read
+
+# One run per timeframe at a time; a late run waits instead of running twice at once.
+concurrency:
+  group: scan-${{ inputs.timeframe }}
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10        # a hung download must not burn minutes
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip           # re-use downloaded packages: faster runs
+
+      - run: pip install -r requirements.txt
+
+      - name: Scan
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python scan.py "${{ inputs.timeframe }}"
