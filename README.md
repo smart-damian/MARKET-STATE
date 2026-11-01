@@ -40,6 +40,10 @@ timeframe, so "2 ATR" means the same thing for gold on 1d and EURUSD on 5m.
   streaming it would use up the free monthly message quota. Apps read `symbols` over REST
   (poll every 30-60 s, ask only for the columns you need) and subscribe to `signal_events`
   to be pushed the moment something flips.
+* **Old events are deleted after 30 days** by the daily run, so the log stays small. Apps
+  should subscribe to **INSERT** events only (`prune.sql` also makes Realtime announce
+  inserts only, so cleanup deletes never cost messages). Subscribe with a filter (a
+  timeframe or ticker) to receive fewer messages.
 * Apps use the public read-only key. Only the secret key can write.
 
 ## Requirements
@@ -50,10 +54,11 @@ timeframe, so "2 ATR" means the same thing for gold on 1d and EURUSD on 5m.
 
 ## One-time setup
 
-1. **Supabase SQL Editor**, run these three files in order (each is safe to re-run):
+1. **Supabase SQL Editor**, run these four files in order (each is safe to re-run):
    1. `supabase/schema.sql`: tables, triggers, security
    2. `supabase/seed_symbols.sql`: the 200 symbols
    3. `supabase/functions.sql`: the two functions the scanner calls
+   4. `supabase/prune.sql`: old-event cleanup + Realtime announces inserts only
 2. **GitHub repo > Settings > Secrets and variables > Actions**, add two secrets:
    * `SUPABASE_URL` (e.g. `https://abcdxyz.supabase.co`)
    * `SUPABASE_SERVICE_KEY` (the secret key; **never** put it in code, chat or a file)
@@ -103,6 +108,7 @@ HYPE32196-USD   NEUTRAL       97.9777     74.5919       87.85      4.209
 5. The results are saved: `levels` rows (upsert), then this timeframe's states through
    `apply_scan()`; the 5m run also calls `apply_prices()`.
 6. The database recomputes `agree_signal` / `agree_count` and logs any flip in `signal_events`.
+7. The 1d run also deletes `signal_events` older than 30 days (`prune_signal_events()`).
 
 | File | Job |
 |---|---|
@@ -111,7 +117,7 @@ HYPE32196-USD   NEUTRAL       97.9777     74.5919       87.85      4.209
 | `levels.py`, `signals.py`, `timeframes.py` | the maths and the settings table |
 | `supabase_client.py` | small HTTP client with timeouts and retries |
 | `symbols.csv` | the 200 symbols (ticker, broker name, class) |
-| `supabase/*.sql` | schema, seed, functions |
+| `supabase/*.sql` | schema, seed, functions, pruning |
 | `tests/` | pytest suite |
 
 ## Changing things
@@ -121,6 +127,7 @@ HYPE32196-USD   NEUTRAL       97.9777     74.5919       87.85      4.209
 * **Add or remove a symbol:** edit `symbols.csv` and `supabase/seed_symbols.sql`, re-run the seed.
 * **Pause a symbol:** set `active = false` in the `symbols` table.
 * **Rename a broker symbol:** edit `broker_name` in Supabase (`levels` follows automatically).
+* **Keep events longer or shorter:** `--keep-days` / `KEEP_DAYS` in `scan.py` (default 30).
 
 ## Security
 
