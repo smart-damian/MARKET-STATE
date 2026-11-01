@@ -13,6 +13,7 @@ What one run does:   fetch -> calculate -> save
   * `levels` table:  high, low, ATR, last price for this timeframe (one row per symbol)
   * `symbols` table: ONLY this timeframe's state + its "updated" time
   * the 5m run also refreshes last price and daily volume (nobody else touches those)
+  * the 1d run also deletes signal_events older than --keep-days (housekeeping, default 30)
 
 Exit codes: 0 ok | 1 no data from Yahoo | 2 bad setup | 3 database write failed
 """
@@ -38,6 +39,8 @@ from supabase_client import SupabaseClient, SupabaseError
 from timeframes import TIMEFRAMES, Timeframe, get_timeframe, resample_ohlc
 
 DEFAULT_SYMBOLS = Path(__file__).resolve().parent / "symbols.csv"
+KEEP_DAYS = 30             # signal_events older than this are deleted
+PRUNE_TIMEFRAME = "1d"     # housekeeping runs once a day, with the daily scan
 
 
 @dataclass(frozen=True)
@@ -145,6 +148,19 @@ def price_rows(readings: list[Reading], volumes: dict[str, float | None], now_is
              "volume_1d": volumes.get(r.ticker)} for r in readings]
 
 
+def prune_old_events(client, keep_days: int) -> int | None:
+    """Delete signal_events older than `keep_days` days; returns how many were removed.
+
+    Housekeeping must never fail a scan that already saved its data, so a problem
+    here is reported as a warning and None is returned.
+    """
+    try:
+        return client.rpc("prune_signal_events", {"keep_days": keep_days})
+    except SupabaseError as exc:
+        print(f"Warning: could not prune old events: {exc}", file=sys.stderr)
+        return None
+
+
 def print_table(tf: Timeframe, readings: list[Reading], skipped: list[str], now: datetime) -> None:
     print(f"STATES {tf.name}  {now:%Y-%m-%d %H:%M} UTC")
     print(f"{'TICKER':<16}{'STATE':<9}{'HIGH':>12}{'LOW':>12}{'LAST':>12}{'ATR':>11}")
@@ -162,11 +178,13 @@ def main() -> int:
     parser.add_argument("--atr-period", type=int, default=ATR_PERIOD)
     parser.add_argument("--atr-mult", type=float, default=ATR_MULT,
                         help=f"near a level = within this many ATRs (default {ATR_MULT:g})")
+    parser.add_argument("--keep-days", type=int, default=KEEP_DAYS,
+                        help=f"the 1d run deletes signal_events older than this (default {KEEP_DAYS})")
     parser.add_argument("--dry-run", action="store_true",
                         help="print the full table; read and write nothing in Supabase")
     args = parser.parse_args()
-    if args.atr_period < 1 or args.atr_mult <= 0:
-        parser.error("--atr-period must be >= 1 and --atr-mult must be > 0")
+    if args.atr_period < 1 or args.atr_mult <= 0 or args.keep_days < 1:
+        parser.error("--atr-period and --keep-days must be >= 1, --atr-mult must be > 0")
 
     tf = get_timeframe(args.timeframe)
     try:
@@ -231,6 +249,10 @@ def main() -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 3
     print(f"[{tf.name}] saved {len(readings)} rows to Supabase.")
+    if tf.name == PRUNE_TIMEFRAME:   # once a day is plenty
+        removed = prune_old_events(client, args.keep_days)
+        if removed is not None:
+            print(f"[{tf.name}] pruned {removed} signal_events older than {args.keep_days} days")
     return 0
 
 
